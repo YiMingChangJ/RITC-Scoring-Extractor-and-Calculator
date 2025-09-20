@@ -48,6 +48,12 @@ class CaseRankAnalyzer:
         # Combine all of orders across all heats
         self.orders_data = pd.concat(orders_dfs, ignore_index=True)
     
+    def zero_out_group(self, group):
+        if (group["std_tick"].eq(0).any()) or (group["sharpe_tick"].eq(0).any()):
+            group["std_tick"] = np.inf
+            group["sharpe_tick"] = -np.inf
+        return group
+
     def compute_tick_stats(self) -> pd.DataFrame:
         """
         Compute tick-by-tick std and Sharpe for each team/case/heat
@@ -92,7 +98,7 @@ class CaseRankAnalyzer:
                 })
 
         tick_df = pd.DataFrame(tick_data) # std and sharpe per team/case/heat
-
+        tick_df = tick_df.groupby(["TeamID", "case"], group_keys=False).apply(self.zero_out_group)
 
         # rank std (lower is better) and sharpe (higher is better) per case/heat
         tick_df["std_for_rank"] = tick_df["std_tick"].replace({0: np.inf}) 
@@ -180,11 +186,11 @@ class CaseRankAnalyzer:
         # === Case rank + overall rank ===
         for col in [c for c in wide.columns if c.startswith("avg_rank_")]:
             case = col.replace("avg_rank_", "")
-            wide[f"case_rank_{case}"] = wide[col].rank(method="min")
+            wide[f"case_rank_{case}"] = wide[col].rank(method="dense")
 
         case_cols = [c for c in wide.columns if c.startswith("case_rank_")]
         wide["average_case_rank"] = wide[case_cols].mean(axis=1, skipna=True)
-        wide["overall_rank"] = wide["average_case_rank"].rank(method="min")
+        wide["overall_rank"] = wide["average_case_rank"].rank(method="dense")
 
         # === Transaction counts (team-level) ===
         if self.orders_data is not None and not self.orders_data.empty:
@@ -200,6 +206,7 @@ class CaseRankAnalyzer:
         std_sharpe_rank = self.compute_tick_stats()
 
         wide = wide.merge(std_sharpe_rank, on='TeamID')
+        
         self.team_wide = wide
 
     def save(self, filename: str) -> None:
@@ -210,7 +217,7 @@ class CaseRankAnalyzer:
 
 # === Example Usage ===
 if __name__ == "__main__":
-    main_path = r"C:/Users/yiming.chang/OneDrive - University of Toronto/Desktop/Yi-Ming Chang/Educational Developer/RITCx/RITCxCMU 2025/RITCxCMU2025-Practice Session Results"
+    main_path = r"C:\Users\92412\Desktop\Educational Developer Rotman\RITCxCMU 2025\RITCxCMU2025-Practice Session Results"
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
