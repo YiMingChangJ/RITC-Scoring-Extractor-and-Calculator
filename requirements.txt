@@ -1,0 +1,6 @@
+pandas
+numpy
+glob
+os
+re
+typing
