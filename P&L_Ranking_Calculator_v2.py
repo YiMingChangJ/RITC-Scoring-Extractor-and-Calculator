@@ -16,6 +16,12 @@ This module processes competition results stored in Excel files. It:
    - Transaction counts
    - Saves the final results to Excel.
 
+extract information from multiple subfolders within a main folder. Each subfolder contains an Excel result file
+for each heat of each case in the competition. The program calculates P&L ranking by ranking the P&L for each 
+heat, averaging the ranks across heats within a case, then averaging across cases, and ranking the overall results.
+Similar methods are applied for STD and Sharpe ratio rankings, where STD and Sharpe ratio are calculated for each team at each heat tick-by-tick, 
+followed by ranking and averaging. The program also counts the total number of transactions each team made during
+the entire competition.
 Intended use: automate ranking and award decisions in RITCxCMU competitions.
 """
 
