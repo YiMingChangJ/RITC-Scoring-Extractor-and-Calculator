@@ -22,6 +22,7 @@ heat, averaging the ranks across heats within a case, then averaging across case
 Similar methods are applied for STD and Sharpe ratio rankings, where STD and Sharpe ratio are calculated for each team at each heat tick-by-tick, 
 followed by ranking and averaging. The program also counts the total number of transactions each team made during
 the entire competition.
+
 Intended use: automate ranking and award decisions in RITCxCMU competitions.
 """
 
