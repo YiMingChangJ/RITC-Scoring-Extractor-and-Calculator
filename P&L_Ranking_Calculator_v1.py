@@ -20,7 +20,7 @@ class CaseRankAnalyzer:
         """Load all heat results, clean data, assign case & heat numbers, compute heat ranks."""
         excel_files = sorted(glob.glob(os.path.join(self.main_path, "*", "Results.xlsx"))) # All excel files paths
         heat_dfs = [] # List of DataFrames per heat for all of the cases.
-        heat_counters = {"ETF": 0, "Volatility": 0, "Unknown": 0} # Count heats per case
+        heat_counters = {"LT3": 0, "Volatility": 0, "Unknown": 0} # Count heats per case
 
         for file in excel_files:
             df = pd.read_excel(file)
@@ -36,8 +36,8 @@ class CaseRankAnalyzer:
             df['LastName'] = df['LastName'].fillna('Unknown')
 
             folder_name = os.path.basename(os.path.dirname(file)) # extract a;; pf 
-            if "ETF" in folder_name:
-                case = "ETF"
+            if "LT3" in folder_name:
+                case = "LT3"
             elif "Volatility" in folder_name:
                 case = "Volatility"
             else:
@@ -118,10 +118,10 @@ class CaseRankAnalyzer:
 
 # === Example Usage ===
 if __name__ == "__main__":
-    main_path = r"C:/Users/yiming.chang/OneDrive - University of Toronto/Desktop/Yi-Ming Chang/Educational Developer/RITCx/RITCxCMU 2025/RITCxCMU2025-Practice Session Results"
+    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCP 2025\Commpetition results"
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
-    analyzer.save("RITCxCMU2025-Practice_Session_Results.xlsx")
+    analyzer.save("RITCxTCP2025-Practice_Session_Results.xlsx")
 
 # %%

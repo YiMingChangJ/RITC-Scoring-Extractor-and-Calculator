@@ -58,12 +58,12 @@ class CaseRankAnalyzer:
         # excel_files = sorted(glob.glob(os.path.join(self.main_path, "*", "Results.xlsx")))
         heat_dfs = [] # List of DataFrames per heat for all of the cases.
         orders_dfs = [] # List of orders DataFrames
-        heat_counters = {"ETF": 0, "Volatility": 0, "Unknown": 0}
+        heat_counters = {"LT3": 0, "Volatility": 0, "Unknown": 0}
     
         for file in excel_files:
             folder_name = os.path.basename(os.path.dirname(file))
-            if "ETF" in folder_name:
-                case = "ETF"
+            if "LT3" in folder_name:
+                case = "LT3"
             elif "Volatility" in folder_name:
                 case = "Volatility"
             else:
@@ -103,15 +103,15 @@ class CaseRankAnalyzer:
         
         excel_files = sorted(glob.glob(os.path.join(self.main_path, "*", "Results.xlsx")),key=self.natural_sort_key)
         # excel_files = sorted(glob.glob(os.path.join(self.main_path, "*", "Results.xlsx")))
-        heat_counters = {"ETF": 0, "Volatility": 0, "Unknown": 0}
+        heat_counters = {"LT3": 0, "Volatility": 0, "Unknown": 0}
         tick_data = []
 
         for file in excel_files:
             folder_name = os.path.basename(os.path.dirname(file))
             charts = pd.read_excel(file, sheet_name="Charts - Traders") # choose the 'Charts - Traders' sheet only
 
-            if "ETF" in folder_name:
-                case = "ETF"
+            if "LT3" in folder_name:
+                case = "LT3"
             elif "Volatility" in folder_name:
                 case = "Volatility"
             else:
