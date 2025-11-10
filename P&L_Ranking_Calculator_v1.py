@@ -97,12 +97,12 @@ class CaseRankAnalyzer:
         # ---- Case rank (within each case) ----
         for col in [c for c in wide.columns if c.startswith("avg_rank_")]:
             case = col.replace("avg_rank_","")
-            wide[f"case_rank_{case}"] = wide[col].rank(method='min')
+            wide[f"case_rank_{case}"] = wide[col].rank(method='dense')
 
         # ---- Overall rank ----
         case_cols = [c for c in wide.columns if c.startswith("case_rank_")]
         wide['average_case_rank'] = wide[case_cols].mean(axis=1, skipna=True)
-        wide['overall_rank'] = wide['average_case_rank'].rank(method='min')
+        wide['overall_rank'] = wide['average_case_rank'].rank(method='dense')
 
         self.wide = wide
 
@@ -118,10 +118,10 @@ class CaseRankAnalyzer:
 
 # === Example Usage ===
 if __name__ == "__main__":
-    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCP 2025\Commpetition results"
+    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCD 2025\Commpetition results"
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
-    analyzer.save("RITCxTCP2025-Practice_Session_Results.xlsx")
+    analyzer.save("RITCxTCD2025-TraderList_Results.xlsx")
 
 # %%

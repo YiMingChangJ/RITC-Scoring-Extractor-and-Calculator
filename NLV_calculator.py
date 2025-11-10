@@ -3,8 +3,8 @@ import pandas as pd
 
 # --- Configuration ---
 # Set this to the name of your main results folder
-root_folder = "Result data"
-output_file = "all_teams_nlv.csv"
+root_folder = r"C:\Users\yiming.chang\source\repos\NewScoringPortal\Previous_Competition_Results\Sample result data\1 BP Commodities"
+output_file = "H1SH1.csv"
 # ---------------------
 
 all_data = []

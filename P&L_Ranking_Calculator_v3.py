@@ -192,10 +192,10 @@ class CaseRankAnalyzer:
         # Rank rule: AFTER aggregation → -inf if team NLV == 0 for that heat
         team_heat["NLV_for_rank"] = np.where(team_heat["NLV"] == 0.0, -np.inf, team_heat["NLV"])
 
-        # Dense rank within each (case, heat_num): higher NLV is better (1 is best)
+        # Min rank within each (case, heat_num): higher NLV is better (1 is best)
         team_heat["heat_rank"] = (
             team_heat.groupby(["case", "heat_num"], group_keys=False)["NLV_for_rank"]
-                     .rank(method="dense", ascending=False)
+                     .rank(method="min", ascending=False)
         )
 
         # ----- Pivot with strict numeric ordering -----
@@ -228,12 +228,12 @@ class CaseRankAnalyzer:
 
         # Case ranks and overall rank (lower is better)
         for col in [c for c in wide.columns if c.startswith("avg_rank_")]:
-            wide[f"case_rank_{col.replace('avg_rank_', '')}"] = wide[col].rank(method="dense", ascending=True)
+            wide[f"case_rank_{col.replace('avg_rank_', '')}"] = wide[col].rank(method="min", ascending=True)
 
         case_cols = [c for c in wide.columns if c.startswith("case_rank_")]
         if case_cols:
             wide["average_case_rank"] = wide[case_cols].mean(axis=1, skipna=True)
-            wide["overall_rank"] = wide["average_case_rank"].rank(method="dense", ascending=True)
+            wide["overall_rank"] = wide["average_case_rank"].rank(method="min", ascending=True)
         else:
             wide["average_case_rank"] = np.nan
             wide["overall_rank"] = np.nan
@@ -300,9 +300,9 @@ class CaseRankAnalyzer:
 # ========================== Runner ==========================
 if __name__ == "__main__":
     # Set your main directory containing subfolders with Results.xlsx
-    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCP 2025\Commpetition results"
+    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCD 2025\Commpetition results"
 
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
-    analyzer.save("RITCxTCP2025-Team_Results.xlsx")
+    analyzer.save("RITCxTCD2025-Team_Results.xlsx")
