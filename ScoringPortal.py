@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RITC Scoring — Teams-Only with Subheat Pivots (folder-based, SQL-accurate ranks)
+RITC Scoring — Teams-Only, SUM per subheat (SQL-accurate) + Audit
 
-Inputs (each CSV in case subfolders):
+Each CSV (one subheat result) has columns:
   TraderID, FirstName, LastName, NLV
 
-Outputs (Excel workbook sheets):
-  - SubHeatRanksStudent   (TeamCode-level: Profit & Rank per subheat)
-  - HeatRanksStudent      (TeamCode-level)
-  - CaseRanksStudent      (TeamCode-level; Score = TeamCount - Rank + 1)
-  - TotalRanksStudent     (TeamCode-level; weighted sum across cases, VAR, Rank)
-  - PnL_<case>            (wide pivot: teams × H#S# → Profit)
-  - Rank_<case>           (wide pivot: teams × H#S# → Rank)
+We:
+  • Normalize TraderID (strip BOM/zero-widths, trim, uppercase)
+  • TeamCode = TraderID.split('-', 1)[0]
+  • For each (CaseID, HeatID, SubHeatID, TeamCode), P&L = SUM of members' NLV
+  • Subheat RANK: zeros last, then Profit DESC (SQL RANK semantics: 1,1,3…)
+  • Heat: avg subheat Score per heat; rank ASC
+  • Case: avg Heat Rank; rank ASC; Score = TeamCount - Rank + 1
+  • Total: weighted sum across cases; Var = VAR(Score); rank by Score DESC / Var ASC
 
-Folder layout example:
-  ROOT/
-    1 BP Commodities/
-      H1SH1.csv, H1SH2.csv, ...
-    2 Flow Traders ETF/
-      ...
-    3 Bridgewater Fixed Income/
-      ...
-    4 Matlab Volatility/
-      ...
-
-Usage:
-  python scoring_views_teams_only_pivots.py --root "<path>" --out "ScoresCheck_Teams.xlsx"
-  python scoring_views_teams_only_pivots.py --root "<path>" --out "ScoresCheck_Teams.xlsx" \
-     --weights "Commodities::30,ETF::25,Fixed Income::20,Volatility::25"
+Outputs:
+  - SubHeatRanksStudent (TeamCode-level P&L + Rank per subheat)
+  - HeatRanksStudent
+  - CaseRanksStudent
+  - TotalRanksStudent
+  - PnL_<case> (pivot: teams × H#S# → Profit)
+  - Rank_<case> (pivot: teams × H#S# → Rank)
+  - Audit_SubheatTeamSum (raw team SUM vs subheat Profit, with Delta)
 """
 
 from __future__ import annotations
@@ -81,6 +75,28 @@ def case_weight_for(name: str, weights_map: Dict[str, float]) -> float:
         if key.lower() in name.lower():
             return float(w)
     return float(DEFAULT_CASE_WEIGHTS.get(name, 25.0))
+
+def normalize_trader_id(series: pd.Series) -> pd.Series:
+    """
+    Remove BOM/zero-width chars, trim whitespace, collapse internal spaces, uppercase.
+    """
+    s = series.astype(str)
+    # Remove common zero-widths & BOM
+    s = s.str.replace(r'[\u200B-\u200D\uFEFF]', '', regex=True)
+    # Trim and collapse inner spaces around hyphen patterns like "BABS - 1"
+    s = s.str.strip()
+    s = s.str.replace(r'\s*-\s*', '-', regex=True)
+    s = s.str.upper()
+    return s
+
+def teamcode_from_traderid(series: pd.Series) -> pd.Series:
+    s = normalize_trader_id(series)
+    # Prefix before first hyphen; if no hyphen, whole ID is teamcode
+    tc = s.str.split('-', n=1).str[0]
+    # Final clean/trim (just in case)
+    tc = tc.str.strip()
+    # If becomes empty, default to TRADERS
+    return tc.where(tc.str.len() > 0, "TRADERS")
 
 def read_csv_any(path: Path, verbose: bool = True) -> pd.DataFrame:
     # Fast path
@@ -148,9 +164,6 @@ def infer_heat_sub(text: str) -> Tuple[Optional[int], Optional[int]]:
     return h, s
 
 def safe_sheet_name(name: str, prefix: str = "", used: Optional[set] = None) -> str:
-    """
-    Excel sheet name <= 31 chars, strip invalid chars, ensure uniqueness.
-    """
     invalid = set(r'[]:*?/\\')
     base = "".join(ch for ch in name if ch not in invalid).strip()
     if prefix:
@@ -216,49 +229,54 @@ def scan_root(root: Path, weights_map: Dict[str, float]):
                 print(f"    ⚠️ {f.name}: missing columns {missing} (skipped)")
                 continue
 
-            # Normalize core fields
-            df["TraderID"] = df["TraderID"].astype(str)
+            # Normalize fields
+            df["TraderID"] = normalize_trader_id(df["TraderID"])
             df["NLV"] = pd.to_numeric(df["NLV"], errors="coerce").fillna(0.0)
 
-            # TeamCode = prefix of TraderID before first '-'
-            team_code = df["TraderID"].str.split("-", n=1).str[0].fillna("TRADERS")
-            team_code = team_code.where(team_code.str.len() > 0, "TRADERS")
+            # TeamCode from TraderID
+            df["TeamCode"] = teamcode_from_traderid(df["TraderID"])
 
-            # Emit rows (we only need TeamCode + NLV; Adjustment=0)
-            for i in range(len(df)):
-                rows.append({
-                    "CaseName":  case_name,
-                    "CaseID":    abs(hash(case_name)) % 1_000_000,
-                    "HeatID":    int(ui_heat),
-                    "SubHeatID": int(ui_sub),
-                    "TeamCode":  str(team_code.iat[i]),
-                    "NLV":       float(df["NLV"].iat[i]),
-                    "Adjustment": 0.0,
-                    "Weight":     float(weight),
-                    "Publish":    1,     # enforced
-                    "Type":       1,     # enforced
-                })
+            # Emit base rows (Adjustment=0, Publish=1, Type=1)
+            out = pd.DataFrame({
+                "CaseName":  case_name,
+                "CaseID":    abs(hash(case_name)) % 1_000_000,
+                "HeatID":    int(ui_heat),
+                "SubHeatID": int(ui_sub),
+                "TeamCode":  df["TeamCode"].astype(str),
+                "TraderID":  df["TraderID"].astype(str),
+                "NLV":       df["NLV"].astype(float),
+                "Adjustment": 0.0,
+                "Weight":     float(weight),
+                "Publish":    1,
+                "Type":       1,
+            })
+            rows.extend(out.to_dict("records"))
 
     if not rows:
         raise RuntimeError("No rows loaded. Check folder contents and file columns.")
-
-    base = pd.DataFrame(rows)
-    return base
+    return pd.DataFrame(rows)
 
 # -------- Views (TeamCode-only, exact SQL semantics) --------
 
 def view_AllPnLStudent(base: pd.DataFrame) -> pd.DataFrame:
     allp = base[(base["Publish"] == 1) & (base["Type"] == 1)].copy()
     allp["Profit"] = allp["NLV"] + allp["Adjustment"]
-    cols = ["CaseID","CaseName","HeatID","SubHeatID","TeamCode","Profit","Weight"]
-    return allp[cols].copy()
+    return allp[["CaseID","CaseName","HeatID","SubHeatID","TeamCode","TraderID","Profit","Weight"]].copy()
 
 def view_SubHeatRanksStudent(allp: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate to TEAM SUM per subheat:
+      Profit_team_sub = SUM(Profit for all TraderID in that TeamCode)
+    Then rank per (CaseID, HeatID, SubHeatID):
+      zeros last, then Profit DESC (SQL RANK 1,1,3…)
+    """
+    # Sum across all members of the team within the subheat
     sub = (
         allp.groupby(["CaseID","CaseName","HeatID","SubHeatID","TeamCode"], as_index=False)
             .agg(Profit=("Profit","sum"),
                  Weight=("Weight","min"))
     )
+
     # zeros last, then Profit DESC
     sub["_zero_key"] = np.where(sub["Profit"] != 0.0, 0, 1)
 
@@ -277,9 +295,10 @@ def view_SubHeatRanksStudent(allp: pd.DataFrame) -> pd.DataFrame:
     sub["Score"] = sub["Rank"].astype(float)
 
     out = sub.drop(columns=["_zero_key"])
-    return out[[
+    out = out[[
         "Profit","TeamCode","CaseID","CaseName","HeatID","SubHeatID","Weight","Rank","Score"
     ]].sort_values(["CaseID","HeatID","SubHeatID","Rank","TeamCode"]).reset_index(drop=True)
+    return out
 
 def view_HeatRanksStudent(subheat: pd.DataFrame) -> pd.DataFrame:
     agg = (
@@ -355,26 +374,37 @@ def view_TotalRanksStudent(case_ranks: pd.DataFrame) -> pd.DataFrame:
     totals["Rank"] = [rank_map[k] for k in key]
     return totals[["TeamCode","Score","Var","Rank"]].sort_values(["Rank","TeamCode"]).reset_index(drop=True)
 
-# -------- Extra: per-case wide pivots (PnL & Rank per subheat) --------
+# -------- Extra: per-case wide pivots + audit --------
 
 def build_case_pivots(subheat: pd.DataFrame) -> Dict[str, Dict[str, pd.DataFrame]]:
-    """
-    Returns: { case_name: { "PnL": pnl_pivot_df, "Rank": rank_pivot_df } }
-    Columns labeled 'H{HeatID}S{SubHeatID}', index = TeamCode
-    """
     out: Dict[str, Dict[str, pd.DataFrame]] = {}
     sub = subheat.copy()
     sub["H_S"] = sub.apply(lambda r: f"H{int(r.HeatID)}S{int(r.SubHeatID)}", axis=1)
-
     for case_name, g in sub.groupby("CaseName"):
         pnl_piv = g.pivot_table(index="TeamCode", columns="H_S", values="Profit", aggfunc="first")
         rnk_piv = g.pivot_table(index="TeamCode", columns="H_S", values="Rank",   aggfunc="first")
-        # Sort columns by numeric heat, sub
         cols_sorted = sorted(pnl_piv.columns, key=lambda k: (int(k.split('S')[0][1:]), int(k.split('S')[1])))
         pnl_piv = pnl_piv.reindex(columns=cols_sorted).sort_index()
         rnk_piv = rnk_piv.reindex(columns=cols_sorted).sort_index()
         out[case_name] = {"PnL": pnl_piv, "Rank": rnk_piv}
     return out
+
+def build_audit(allp: pd.DataFrame, subheat: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compare raw SUM over members vs subheat Profit per (CaseID,HeatID,SubHeatID,TeamCode).
+    """
+    raw = (
+        allp.groupby(["CaseID","CaseName","HeatID","SubHeatID","TeamCode"], as_index=False)
+            .agg(RawTeamSum=("Profit","sum"))
+    )
+    merged = raw.merge(
+        subheat[["CaseID","CaseName","HeatID","SubHeatID","TeamCode","Profit","Rank"]],
+        on=["CaseID","CaseName","HeatID","SubHeatID","TeamCode"],
+        how="left"
+    )
+    merged["Delta"] = (merged["RawTeamSum"] - merged["Profit"]).round(10)
+    merged = merged.sort_values(["CaseID","HeatID","SubHeatID","TeamCode"]).reset_index(drop=True)
+    return merged
 
 # -------- Pipeline --------
 
@@ -389,19 +419,20 @@ def main():
     root = Path(args.root).expanduser()
     weights_map = parse_weights_arg(args.weights)
 
-    # 1) Scan to base (TeamCode-only)
+    # 1) Scan raw rows
     base = scan_root(root, weights_map)
     print(f"\n✅ Loaded trader rows: {len(base)} | Cases: {base['CaseID'].nunique()} | Teams: {base['TeamCode'].nunique()}")
 
-    # 2) Views (exact SQL math, adapted to TeamCode)
-    allp = view_AllPnLStudent(base)
-    sub  = view_SubHeatRanksStudent(allp)  # contains Profit & Rank per subheat/team
+    # 2) Views (exact SQL semantics with TEAM SUM per subheat)
+    allp = view_AllPnLStudent(base)         # trader-level, with Profit
+    sub  = view_SubHeatRanksStudent(allp)   # team SUM per subheat
     heat = view_HeatRanksStudent(sub)
     case = view_CaseRanksStudent(heat, team_codes=base["TeamCode"])
     total= view_TotalRanksStudent(case)
 
-    # 3) Build per-case pivots
+    # 3) Pivots & Audit
     pivots = build_case_pivots(sub)
+    audit  = build_audit(allp, sub)
 
     # 4) Save workbook
     used_names = set()
@@ -411,16 +442,22 @@ def main():
         case.to_excel(xl,  index=False, sheet_name="CaseRanksStudent")
         total.to_excel(xl, index=False, sheet_name="TotalRanksStudent")
 
-        # Add pivots per case (sanitize sheet names)
+        # pivots per case
         for case_name, d in pivots.items():
             pnl_sheet  = safe_sheet_name(case_name, prefix="PnL",  used=used_names)
             rank_sheet = safe_sheet_name(case_name, prefix="Rank", used=used_names)
             d["PnL"].to_excel(xl,  sheet_name=pnl_sheet)
             d["Rank"].to_excel(xl, sheet_name=rank_sheet)
 
+        # audit sheet
+        audit.to_excel(xl, index=False, sheet_name="Audit_SubheatTeamSum")
+
     print(f"📄 Wrote: {args.out}")
-    print("\nExample — first 10 SubHeat rows (Profit & Rank per team/subheat):")
-    print(sub.head(10).to_string(index=False))
+    # Quick hint: check a specific team like BABS in the audit
+    sample = audit.query("TeamCode == 'BABS'").head(8)
+    if not sample.empty:
+        print("\nAudit sample for BABS:")
+        print(sample.to_string(index=False))
 
 if __name__ == "__main__":
     main()
