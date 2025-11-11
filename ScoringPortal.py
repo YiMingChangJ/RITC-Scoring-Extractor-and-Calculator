@@ -2,27 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 RITC Scoring — Teams-Only, SUM per subheat (SQL-accurate) + Audit
-
-Each CSV (one subheat result) has columns:
-  TraderID, FirstName, LastName, NLV
-
-We:
-  • Normalize TraderID (strip BOM/zero-widths, trim, uppercase)
-  • TeamCode = TraderID.split('-', 1)[0]
-  • For each (CaseID, HeatID, SubHeatID, TeamCode), P&L = SUM of members' NLV
-  • Subheat RANK: zeros last, then Profit DESC (SQL RANK semantics: 1,1,3…)
-  • Heat: avg subheat Score per heat; rank ASC
-  • Case: avg Heat Rank; rank ASC; Score = TeamCount - Rank + 1
-  • Total: weighted sum across cases; Var = VAR(Score); rank by Score DESC / Var ASC
-
-Outputs:
-  - SubHeatRanksStudent (TeamCode-level P&L + Rank per subheat)
-  - HeatRanksStudent
-  - CaseRanksStudent
-  - TotalRanksStudent
-  - PnL_<case> (pivot: teams × H#S# → Profit)
-  - Rank_<case> (pivot: teams × H#S# → Rank)
-  - Audit_SubheatTeamSum (raw team SUM vs subheat Profit, with Delta)
+Fixed H/S parser to correctly read files like H1SH2.csv, H1S3.csv, "Heat 2 Sub 5.csv", etc.
 """
 
 from __future__ import annotations
@@ -45,8 +25,13 @@ DEFAULT_CASE_WEIGHTS = {
     "Volatility": 25.0,
 }
 
-HEAT_PAT = re.compile(r"(?:^|[^a-z])(heat|h)[ _-]*([0-9]+)(?=\D|$)", re.IGNORECASE)
-SUB_PAT  = re.compile(r"(?:^|[^a-z])(sub|s)[ _-]*([0-9]+)(?=\D|$)",  re.IGNORECASE)
+# Robust combined pattern: H<d+> ... S(H|UB|UBHEAT)?<d+>
+COMBO_HS = re.compile(
+    r"h\s*([0-9]+)\s*[^0-9a-zA-Z]*s(?:h|ub(?:heat)?)?\s*([0-9]+)",
+    re.IGNORECASE,
+)
+HEAT_ONLY = re.compile(r"(?:heat|h)\s*([0-9]+)", re.IGNORECASE)
+SUB_ONLY  = re.compile(r"(?:subheat|sub|sh|s)\s*([0-9]+)", re.IGNORECASE)
 
 ENCODING_TRY = [
     "utf-8", "utf-8-sig",
@@ -77,13 +62,8 @@ def case_weight_for(name: str, weights_map: Dict[str, float]) -> float:
     return float(DEFAULT_CASE_WEIGHTS.get(name, 25.0))
 
 def normalize_trader_id(series: pd.Series) -> pd.Series:
-    """
-    Remove BOM/zero-width chars, trim whitespace, collapse internal spaces, uppercase.
-    """
     s = series.astype(str)
-    # Remove common zero-widths & BOM
-    s = s.str.replace(r'[\u200B-\u200D\uFEFF]', '', regex=True)
-    # Trim and collapse inner spaces around hyphen patterns like "BABS - 1"
+    s = s.str.replace(r'[\u200B-\u200D\uFEFF]', '', regex=True)  # zero-width/BOM
     s = s.str.strip()
     s = s.str.replace(r'\s*-\s*', '-', regex=True)
     s = s.str.upper()
@@ -91,11 +71,7 @@ def normalize_trader_id(series: pd.Series) -> pd.Series:
 
 def teamcode_from_traderid(series: pd.Series) -> pd.Series:
     s = normalize_trader_id(series)
-    # Prefix before first hyphen; if no hyphen, whole ID is teamcode
-    tc = s.str.split('-', n=1).str[0]
-    # Final clean/trim (just in case)
-    tc = tc.str.strip()
-    # If becomes empty, default to TRADERS
+    tc = s.str.split('-', n=1).str[0].str.strip()
     return tc.where(tc.str.len() > 0, "TRADERS")
 
 def read_csv_any(path: Path, verbose: bool = True) -> pd.DataFrame:
@@ -103,7 +79,7 @@ def read_csv_any(path: Path, verbose: bool = True) -> pd.DataFrame:
     try:
         df = pd.read_csv(path)
         if verbose:
-            print(f"    ✓ {path.name} decoded as utf-8 sep=','")
+            print(f"      ✓ {path.name} decoded as utf-8 sep=','")
         return df
     except Exception:
         pass
@@ -119,7 +95,7 @@ def read_csv_any(path: Path, verbose: bool = True) -> pd.DataFrame:
                             try:
                                 df = pd.read_csv(BytesIO(data), encoding=enc, sep=sep2)
                                 if verbose:
-                                    print(f"    ✓ {path.name} decoded as {enc} sep='{sep2}'")
+                                    print(f"      ✓ {path.name} decoded as {enc} sep='{sep2}'")
                                 return df
                             except Exception:
                                 continue
@@ -127,23 +103,23 @@ def read_csv_any(path: Path, verbose: bool = True) -> pd.DataFrame:
                     else:
                         df = pd.read_csv(BytesIO(data), encoding=enc, sep=sep)
                         if verbose:
-                            print(f"    ✓ {path.name} decoded as {enc} sep='{sep}'")
+                            print(f"      ✓ {path.name} decoded as {enc} sep='{sep}'")
                         return df
                 else:
                     if sep is None:
                         df = pd.read_csv(BytesIO(data), encoding=enc, sep=None, engine="python")
                         if verbose:
-                            print(f"    ✓ {path.name} decoded as {enc} sep='auto'")
+                            print(f"      ✓ {path.name} decoded as {enc} sep='auto'")
                         return df
                     else:
                         df = pd.read_csv(BytesIO(data), encoding=enc, sep=sep)
                         if verbose:
-                            print(f"    ✓ {path.name} decoded as {enc} sep='{sep}'")
+                            print(f"      ✓ {path.name} decoded as {enc} sep='{sep}'")
                         return df
             except Exception as e:
                 last_err = e
                 continue
-    # Fallback: decode with replacements + sniff delimiter
+    # Fallback
     text = data.decode("utf-8", errors="replace")
     try:
         sniff = csv.Sniffer().sniff(text.splitlines()[0])
@@ -152,16 +128,25 @@ def read_csv_any(path: Path, verbose: bool = True) -> pd.DataFrame:
         sep = ","
     df = pd.read_csv(StringIO(text), sep=sep)
     if verbose:
-        print(f"    ✓ {path.name} decoded via 'replace' sep='{sep}' (fallback)")
+        print(f"      ✓ {path.name} decoded via 'replace' sep='{sep}' (fallback)")
     return df
 
 def infer_heat_sub(text: str) -> Tuple[Optional[int], Optional[int]]:
-    h = s = None
-    m = HEAT_PAT.search(text)
-    if m: h = int(m.group(2))
-    m = SUB_PAT.search(text)
-    if m: s = int(m.group(2))
-    return h, s
+    """
+    Accepts: H1SH2, H1S2, Heat 1 Sub 2, H-1_S-2, etc.
+    Returns (heat, sub) or (None, None) if not found.
+    """
+    s = str(text)
+    # Try combined "H... S..." pattern first
+    m = COMBO_HS.search(s)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    # Fallback: independent searches
+    mh = HEAT_ONLY.search(s)
+    ms = SUB_ONLY.search(s)
+    h = int(mh.group(1)) if mh else None
+    sh = int(ms.group(1)) if ms else None
+    return h, sh
 
 def safe_sheet_name(name: str, prefix: str = "", used: Optional[set] = None) -> str:
     invalid = set(r'[]:*?/\\')
@@ -217,16 +202,18 @@ def scan_root(root: Path, weights_map: Dict[str, float]):
             if ui_sub is None:
                 ui_sub = 1
 
+            print(f"    · {f.name} → Heat={ui_heat}, Sub={ui_sub}")  # DEBUG: show mapping
+
             try:
                 df = read_csv_any(f, verbose=True)
             except Exception as ex:
-                print(f"    ⚠️ {f.name}: read error -> {ex} (skipped)")
+                print(f"      ⚠️ {f.name}: read error -> {ex} (skipped)")
                 continue
 
             expected = ["TraderID", "FirstName", "LastName", "NLV"]
             missing = [c for c in expected if c not in df.columns]
             if missing:
-                print(f"    ⚠️ {f.name}: missing columns {missing} (skipped)")
+                print(f"      ⚠️ {f.name}: missing columns {missing} (skipped)")
                 continue
 
             # Normalize fields
@@ -264,22 +251,14 @@ def view_AllPnLStudent(base: pd.DataFrame) -> pd.DataFrame:
     return allp[["CaseID","CaseName","HeatID","SubHeatID","TeamCode","TraderID","Profit","Weight"]].copy()
 
 def view_SubHeatRanksStudent(allp: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate to TEAM SUM per subheat:
-      Profit_team_sub = SUM(Profit for all TraderID in that TeamCode)
-    Then rank per (CaseID, HeatID, SubHeatID):
-      zeros last, then Profit DESC (SQL RANK 1,1,3…)
-    """
-    # Sum across all members of the team within the subheat
     sub = (
         allp.groupby(["CaseID","CaseName","HeatID","SubHeatID","TeamCode"], as_index=False)
             .agg(Profit=("Profit","sum"),
                  Weight=("Weight","min"))
     )
 
-    # zeros last, then Profit DESC
+    # zeros last, then Profit DESC (SQL RANK semantics)
     sub["_zero_key"] = np.where(sub["Profit"] != 0.0, 0, 1)
-
     ranks = np.empty(len(sub), dtype=int)
     for _, idx in sub.groupby(["CaseID","HeatID","SubHeatID"]).groups.items():
         part = sub.loc[idx].copy()
@@ -290,7 +269,6 @@ def view_SubHeatRanksStudent(allp: pd.DataFrame) -> pd.DataFrame:
             rser.loc[same.index] = current
             current += len(same)
         ranks[idx] = rser.loc[idx].values
-
     sub["Rank"] = ranks.astype(int)
     sub["Score"] = sub["Rank"].astype(float)
 
@@ -324,13 +302,11 @@ def view_HeatRanksStudent(subheat: pd.DataFrame) -> pd.DataFrame:
 
 def view_CaseRanksStudent(heat: pd.DataFrame, team_codes: pd.Series) -> pd.DataFrame:
     team_count = int(team_codes.nunique())
-
     avg_heat = (
         heat.groupby(["TeamCode","CaseID","CaseName"], as_index=False)
             .agg(AvgHeatRank=("Rank","mean"),
                  Weight=("Weight","min"))
     )
-
     cr_ranks = np.empty(len(avg_heat), dtype=int)
     for _, idx in avg_heat.groupby("CaseID").groups.items():
         part = avg_heat.loc[idx].copy()
@@ -342,9 +318,7 @@ def view_CaseRanksStudent(heat: pd.DataFrame, team_codes: pd.Series) -> pd.DataF
             current += len(same)
         cr_ranks[idx] = rser.loc[idx].values
     avg_heat["Rank"] = cr_ranks.astype(int)
-
     avg_heat["Score"] = team_count - avg_heat["Rank"] + 1
-
     return avg_heat[[
         "TeamCode","CaseID","CaseName","Weight","Score","Rank"
     ]].sort_values(["CaseID","Rank","TeamCode"]).reset_index(drop=True)
@@ -352,17 +326,14 @@ def view_CaseRanksStudent(heat: pd.DataFrame, team_codes: pd.Series) -> pd.DataF
 def view_TotalRanksStudent(case_ranks: pd.DataFrame) -> pd.DataFrame:
     cr = case_ranks.copy()
     cr["Weighted"] = cr["Score"] * (cr["Weight"] / 100.0)
-
     totals = (
         cr.groupby("TeamCode", as_index=False)
           .agg(Score=("Weighted","sum"),
                Var=("Score", lambda s: float(pd.Series(s).var(ddof=1)) if len(s) >= 2 else np.nan))
     )
-
     var_for_rank = totals["Var"].fillna(np.inf)
     order = np.lexsort((var_for_rank.values, -totals["Score"].values))
     key = list(zip(totals["Score"].round(12), var_for_rank.round(12)))
-
     rank_map: Dict[Tuple[float,float], int] = {}
     cur = 1
     for idx in order:
@@ -370,11 +341,10 @@ def view_TotalRanksStudent(case_ranks: pd.DataFrame) -> pd.DataFrame:
         if k not in rank_map:
             rank_map[k] = cur
         cur += 1
-
     totals["Rank"] = [rank_map[k] for k in key]
     return totals[["TeamCode","Score","Var","Rank"]].sort_values(["Rank","TeamCode"]).reset_index(drop=True)
 
-# -------- Extra: per-case wide pivots + audit --------
+# -------- Extra: pivots + audit --------
 
 def build_case_pivots(subheat: pd.DataFrame) -> Dict[str, Dict[str, pd.DataFrame]]:
     out: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -390,9 +360,6 @@ def build_case_pivots(subheat: pd.DataFrame) -> Dict[str, Dict[str, pd.DataFrame
     return out
 
 def build_audit(allp: pd.DataFrame, subheat: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compare raw SUM over members vs subheat Profit per (CaseID,HeatID,SubHeatID,TeamCode).
-    """
     raw = (
         allp.groupby(["CaseID","CaseName","HeatID","SubHeatID","TeamCode"], as_index=False)
             .agg(RawTeamSum=("Profit","sum"))
@@ -403,8 +370,7 @@ def build_audit(allp: pd.DataFrame, subheat: pd.DataFrame) -> pd.DataFrame:
         how="left"
     )
     merged["Delta"] = (merged["RawTeamSum"] - merged["Profit"]).round(10)
-    merged = merged.sort_values(["CaseID","HeatID","SubHeatID","TeamCode"]).reset_index(drop=True)
-    return merged
+    return merged.sort_values(["CaseID","HeatID","SubHeatID","TeamCode"]).reset_index(drop=True)
 
 # -------- Pipeline --------
 
@@ -419,45 +385,32 @@ def main():
     root = Path(args.root).expanduser()
     weights_map = parse_weights_arg(args.weights)
 
-    # 1) Scan raw rows
     base = scan_root(root, weights_map)
     print(f"\n✅ Loaded trader rows: {len(base)} | Cases: {base['CaseID'].nunique()} | Teams: {base['TeamCode'].nunique()}")
 
-    # 2) Views (exact SQL semantics with TEAM SUM per subheat)
-    allp = view_AllPnLStudent(base)         # trader-level, with Profit
+    allp = view_AllPnLStudent(base)
     sub  = view_SubHeatRanksStudent(allp)   # team SUM per subheat
     heat = view_HeatRanksStudent(sub)
     case = view_CaseRanksStudent(heat, team_codes=base["TeamCode"])
     total= view_TotalRanksStudent(case)
 
-    # 3) Pivots & Audit
     pivots = build_case_pivots(sub)
     audit  = build_audit(allp, sub)
 
-    # 4) Save workbook
     used_names = set()
     with pd.ExcelWriter(args.out, engine="openpyxl") as xl:
         sub.to_excel(xl,   index=False, sheet_name="SubHeatRanksStudent")
         heat.to_excel(xl,  index=False, sheet_name="HeatRanksStudent")
         case.to_excel(xl,  index=False, sheet_name="CaseRanksStudent")
         total.to_excel(xl, index=False, sheet_name="TotalRanksStudent")
-
-        # pivots per case
         for case_name, d in pivots.items():
             pnl_sheet  = safe_sheet_name(case_name, prefix="PnL",  used=used_names)
             rank_sheet = safe_sheet_name(case_name, prefix="Rank", used=used_names)
             d["PnL"].to_excel(xl,  sheet_name=pnl_sheet)
             d["Rank"].to_excel(xl, sheet_name=rank_sheet)
-
-        # audit sheet
         audit.to_excel(xl, index=False, sheet_name="Audit_SubheatTeamSum")
 
     print(f"📄 Wrote: {args.out}")
-    # Quick hint: check a specific team like BABS in the audit
-    sample = audit.query("TeamCode == 'BABS'").head(8)
-    if not sample.empty:
-        print("\nAudit sample for BABS:")
-        print(sample.to_string(index=False))
 
 if __name__ == "__main__":
     main()
