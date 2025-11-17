@@ -269,8 +269,8 @@ class CaseRankAnalyzer:
 
 # === Example Usage ===
 if __name__ == "__main__":
-    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITCx\RITCxCMU 2025\RITCxCMU2025-Competition Results"
+    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxQuestrom 2025\Competition Results"
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
-    analyzer.save("RITCxCMU2025-Team_Results.xlsx")
+    analyzer.save("RITCxQuestrom2025-Team_Results.xlsx")

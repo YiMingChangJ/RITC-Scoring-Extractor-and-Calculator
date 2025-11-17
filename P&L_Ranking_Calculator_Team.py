@@ -59,8 +59,8 @@ class CaseRankAnalyzer:
         low = folder_name.lower()
         if "lt3" in low:
             return "LT3"
-        if "volatility" in low:
-            return "Volatility"
+        if "algo2" in low:
+            return "Algo2"
         return "Unknown"
 
     @staticmethod
@@ -311,9 +311,8 @@ class CaseRankAnalyzer:
 # ========================== Runner ==========================
 if __name__ == "__main__":
     # Set your main directory containing subfolders with Results.xlsx
-    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCD 2025\Commpetition results"
-
+    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxQuestrom 2025\Competition Results"
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
-    analyzer.save("RITCxTCD2025-Team_Results.xlsx")
+    analyzer.save("RITCxQuestrom2025-Team_Results.xlsx")

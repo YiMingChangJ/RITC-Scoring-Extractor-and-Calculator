@@ -60,11 +60,15 @@ class CaseRankAnalyzer:
     # ---------- helpers ----------
     @staticmethod
     def _extract_case(folder_name: str) -> str:
+        """
+        Map folder names to case codes (e.g. 'LT3', 'Algo2').
+        NOTE: fixed lowercasing bug for 'algo2'.
+        """
         low = folder_name.lower()
         if "lt3" in low:
             return "LT3"
-        if "volatility" in low:
-            return "Volatility"
+        if "algo2" in low:
+            return "Algo2"
         return "Unknown"
 
     @staticmethod
@@ -73,9 +77,9 @@ class CaseRankAnalyzer:
         Prefer explicit 'heat N'; otherwise use the LAST integer found in the folder name.
         Examples:
           'LT3_Heat 8' -> 8
-          'LT3-H9' -> 9
-          'LT3_11' -> 11
-          'Heat_02' -> 2
+          'LT3-H9'     -> 9
+          'LT3_11'     -> 11
+          'Heat_02'    -> 2
         """
         m = re.search(r"heat[\s_\-]*?(\d+)", folder_name, flags=re.IGNORECASE)
         if m:
@@ -97,23 +101,32 @@ class CaseRankAnalyzer:
     def _pick_nlv_series(df: pd.DataFrame) -> pd.Series:
         """
         Select the NLV column robustly; fall back to PnL if necessary.
+        More tolerant of headers like 'Total NLV', 'P&L', 'Total PnL', etc.
         """
         low = {str(c).strip().lower(): c for c in df.columns}
+
+        # Direct match 'nlv'
         if "nlv" in low:
             s = df[low["nlv"]]
         else:
-            cands = [k for k in low if re.search(r"\bnlv\b", k)]
-            if cands:
-                s = df[low[sorted(cands, key=len)[0]]]
+            # Any column containing 'nlv'
+            nlv_cands = [k for k in low if "nlv" in k]
+            if nlv_cands:
+                picked = sorted(nlv_cands, key=len)[0]  # prefer shortest
+                s = df[low[picked]]
             else:
-                cands = [k for k in low if re.search(r"\bp&?nl\b", k)]
-                if not cands:
+                # Fallback to PnL / P&L / similar
+                pnl_cands = [k for k in low if "pnl" in k or "p&l" in k]
+                if not pnl_cands:
                     raise KeyError("Could not locate NLV / PnL column in results sheet.")
-                s = df[low[sorted(cands, key=len)[0]]]
+                picked = sorted(pnl_cands, key=len)[0]
+                s = df[low[picked]]
+
         return CaseRankAnalyzer._coerce_money_like(s)
 
     @staticmethod
     def _pick_str_col(df: pd.DataFrame, name: str, default: str = "Unknown") -> pd.Series:
+        """Safely pick a string column; use default if missing."""
         low = {str(c).strip().lower(): c for c in df.columns}
         if name.lower() in low:
             return df[low[name.lower()]].astype(str).fillna(default)
@@ -167,6 +180,7 @@ class CaseRankAnalyzer:
             last_name = self._pick_str_col(df, "LastName", default="Unknown")
             nlv_series = self._pick_nlv_series(df)
 
+            # root is typically the team prefix (before '-'); we keep it as a label only
             root = trader_id.astype(str).str.split("-").str[0]
 
             rows.append(pd.DataFrame({
@@ -201,10 +215,14 @@ class CaseRankAnalyzer:
         # ---- DENSIFY GRID FOR MISSED ROUNDS ----
         # All heats per case present in data:
         case_heat = trader_heat[["case", "heat_num"]].drop_duplicates()
+
         # All (TraderID, FirstName, LastName, root, case) where trader appears at least once:
         trader_case = trader_heat[["TraderID", "FirstName", "LastName", "root", "case"]].drop_duplicates()
+
         # Cartesian join → ensure every trader-case has every heat of that case:
         full_index = trader_case.merge(case_heat, on="case", how="left")
+
+        # Left-join existing results; missing heats → NLV = 0
         trader_heat_full = full_index.merge(
             trader_heat,
             on=["TraderID", "FirstName", "LastName", "root", "case", "heat_num"],
@@ -214,8 +232,11 @@ class CaseRankAnalyzer:
         trader_heat_full["heat"] = "Heat " + trader_heat_full["heat_num"].astype(int).astype(str)
 
         # Ranking rule: AFTER aggregation → -inf if trader NLV == 0 for that heat
+        # This makes non-participation (or exact zero P&L) rank last in that heat.
         trader_heat_full["NLV_for_rank"] = np.where(
-            trader_heat_full["NLV"] == 0.0, -np.inf, trader_heat_full["NLV"]
+            trader_heat_full["NLV"] == 0.0,
+            -np.inf,
+            trader_heat_full["NLV"]
         )
 
         # Min rank within each (case, heat_num): higher NLV is better (1 is best)
@@ -249,24 +270,32 @@ class CaseRankAnalyzer:
 
         # ---- Average heat ranks per case ----
         avg_ranks = (
-            trader_heat_full.groupby(["TraderID", "FirstName", "LastName", "root", "case"], as_index=False)["heat_rank"]
-                            .mean()
-                            .rename(columns={"heat_rank": "avg_rank"})
+            trader_heat_full.groupby(
+                ["TraderID", "FirstName", "LastName", "root", "case"], as_index=False
+            )["heat_rank"]
+            .mean()
+            .rename(columns={"heat_rank": "avg_rank"})
         )
+
         avg_ranks_wide = avg_ranks.pivot_table(
             index=["TraderID", "FirstName", "LastName", "root"],
             columns="case",
             values="avg_rank"
         ).reset_index()
         avg_ranks_wide = avg_ranks_wide.rename(
-            columns={c: f"avg_rank_{c}" for c in avg_ranks_wide.columns if c not in ["TraderID", "FirstName", "LastName", "root"]}
+            columns={
+                c: f"avg_rank_{c}"
+                for c in avg_ranks_wide.columns
+                if c not in ["TraderID", "FirstName", "LastName", "root"]
+            }
         )
 
         wide = wide.merge(avg_ranks_wide, on=["TraderID", "FirstName", "LastName", "root"], how="left")
 
         # ---- Case rank (lower is better) ----
         for col in [c for c in wide.columns if c.startswith("avg_rank_")]:
-            wide[f"case_rank_{col.replace('avg_rank_', '')}"] = wide[col].rank(method="min", ascending=True)
+            case_name = col.replace("avg_rank_", "")
+            wide[f"case_rank_{case_name}"] = wide[col].rank(method="min", ascending=True)
 
         # ---- Overall rank ----
         case_cols = [c for c in wide.columns if c.startswith("case_rank_")]
@@ -276,6 +305,10 @@ class CaseRankAnalyzer:
         else:
             wide["average_case_rank"] = np.nan
             wide["overall_rank"] = np.nan
+
+        # If you truly don't want any team-ish identifier at all,
+        # you can drop 'root' here:
+        # wide = wide.drop(columns=["root"])
 
         self.wide = wide
 
@@ -338,8 +371,8 @@ class CaseRankAnalyzer:
 
 # ========================== Runner ==========================
 if __name__ == "__main__":
-    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxTCD 2025\Commpetition results"
+    main_path = r"C:\Users\yiming.chang\OneDrive - University of Toronto\Desktop\Yi-Ming Chang\Educational Developer\RITC\RITCxQuestrom 2025\Competition Results"
     analyzer = CaseRankAnalyzer(main_path)
     analyzer.load_and_prepare()
     analyzer.build_table()
-    analyzer.save("RITCxTCD2025-Trader_Results.xlsx")
+    analyzer.save("RITCxQuestrom2025-Trader_Results.xlsx")
