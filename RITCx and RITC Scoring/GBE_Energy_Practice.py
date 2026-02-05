@@ -155,7 +155,7 @@ class SingleFileRankAnalyzer:
                 sheet.write(row_start, col_start + 1, "", header_fmt) # Merge look-alike
 
                 # 2. Column Headers
-                sheet.write(row_start + 1, col_start, "ID / Team", fmt_bold)
+                sheet.write(row_start + 1, col_start, "TraderID", fmt_bold)
                 sheet.write(row_start + 1, col_start + 1, "NLV", fmt_bold)
 
                 # 3. Data Rows
@@ -194,3 +194,203 @@ if __name__ == "__main__":
         analyzer.save_results("Rankings_Output.xlsx")
     except Exception as ex:
         print(f"An error occurred: {ex}")
+
+
+
+#!/usr/bin/env python3
+"""
+RIT CaseRankAnalyzer (Single File Version)
+------------------------------------------
+Reads ONE Excel results file, parses TraderIDs (Team-Role),
+and generates:
+ 1. Top 10 Traders (T1/T2)
+ 2. Top 10 Distributors (D)
+ 3. Top 10 Producers (P)
+ 4. FULL Ranking for Teams Overall (Sum of all roles)
+"""
+
+# import os
+# import pandas as pd
+# import numpy as np
+# from datetime import datetime
+
+# class SingleFileRankAnalyzer:
+#     def __init__(self, file_path: str):
+#         self.file_path = file_path
+#         self.df = None
+#         self.leaderboards = {}
+
+#     def _clean_currency(self, series: pd.Series) -> pd.Series:
+#         """Cleans currency strings (e.g., '$1,234.56', '(500)') into floats."""
+#         s = series.astype(str).str.replace(r"\s+", "", regex=True)
+#         s = s.str.replace("$", "", regex=False).str.replace(",", "", regex=False)
+#         s = s.str.replace(r"^\((.*)\)$", r"-\1", regex=True)
+#         return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
+#     def load_data(self):
+#         """Reads the single Excel file and prepares the data."""
+#         if not os.path.exists(self.file_path):
+#             raise FileNotFoundError(f"File not found: {self.file_path}")
+
+#         try:
+#             raw_df = pd.read_excel(self.file_path)
+#         except Exception as e:
+#             raise ValueError(f"Could not read Excel file. Error: {e}")
+
+#         # Normalize column names
+#         raw_df.columns = [c.strip() for c in raw_df.columns]
+#         low_cols = {c.lower(): c for c in raw_df.columns}
+
+#         # Find TraderID
+#         if "traderid" in low_cols:
+#             tid_col = low_cols["traderid"]
+#         else:
+#             raise KeyError("Could not find a 'TraderID' column.")
+
+#         # Find NLV (or P&L)
+#         if "nlv" in low_cols:
+#             nlv_col = low_cols["nlv"]
+#         elif "total nlv" in low_cols:
+#             nlv_col = low_cols["total nlv"]
+#         else:
+#             pnl_cands = [c for c in low_cols if "pnl" in c or "p&l" in c]
+#             if pnl_cands:
+#                 nlv_col = pnl_cands[0]
+#             else:
+#                 raise KeyError("Could not find 'NLV' or 'P&L' column.")
+
+#         # Extract and Clean Data
+#         self.df = pd.DataFrame()
+#         self.df["TraderID"] = raw_df[tid_col].astype(str)
+#         self.df["NLV"] = self._clean_currency(raw_df[nlv_col])
+
+#         # Parse "TEAM-ROLE" (e.g. FQAR-T1 -> Root: FQAR, Suffix: T1)
+#         split_data = self.df["TraderID"].str.rsplit("-", n=1)
+        
+#         self.df["Root"] = split_data.apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x)
+#         self.df["Suffix"] = split_data.apply(lambda x: x[1] if isinstance(x, list) and len(x) > 1 else "Unknown")
+
+#         print(f"Loaded {len(self.df)} rows from {os.path.basename(self.file_path)}")
+
+#     def generate_leaderboards(self):
+#         """Aggregates data for specific leaderboards."""
+#         if self.df is None or self.df.empty:
+#             return
+
+#         def get_ranked_list(data, name_col="TraderID", top_n=10):
+#             """Sorts and takes top N. If top_n is None, returns all."""
+#             sorted_df = data.sort_values(by="NLV", ascending=False).reset_index(drop=True)
+            
+#             if top_n is not None:
+#                 sorted_df = sorted_df.head(top_n)
+            
+#             # Add a 'Rank' column for display
+#             sorted_df.insert(0, "Rank", range(1, len(sorted_df) + 1))
+#             return sorted_df[[ "Rank", name_col, "NLV"]]
+
+#         # 1. Top 10 Traders (Suffix T1 or T2)
+#         mask_traders = self.df["Suffix"].str.upper().isin(["T1", "T2"])
+#         self.leaderboards["Top 10 Traders"] = get_ranked_list(self.df[mask_traders], top_n=10)
+
+#         # 2. Top 10 Distributors (Suffix D)
+#         mask_dist = self.df["Suffix"].str.upper() == "D"
+#         self.leaderboards["Top 10 Distributors"] = get_ranked_list(self.df[mask_dist], top_n=10)
+
+#         # 3. Top 10 Producers (Suffix P)
+#         mask_prod = self.df["Suffix"].str.upper() == "P"
+#         self.leaderboards["Top 10 Producers"] = get_ranked_list(self.df[mask_prod], top_n=10)
+
+#         # 4. Teams Overall Ranking (ALL Teams)
+#         # Note: top_n=None means return the full list
+#         team_agg = self.df.groupby("Root", as_index=False)["NLV"].sum()
+#         self.leaderboards["Teams Overall Ranking"] = get_ranked_list(team_agg, name_col="Root", top_n=None)
+
+#     def save_results(self, output_name="Leaderboard_Results.xlsx"):
+#         """Saves the leaderboards to a styled Excel file."""
+#         if not self.leaderboards:
+#             print("No leaderboards generated.")
+#             return
+
+#         directory = os.path.dirname(self.file_path)
+#         save_path = os.path.join(directory, output_name)
+
+#         try:
+#             writer = pd.ExcelWriter(save_path, engine="xlsxwriter")
+#             workbook = writer.book
+#             sheet = workbook.add_worksheet("Rankings")
+
+#             # --- Styles ---
+#             fmt_header_orange = workbook.add_format({'bold': True, 'bg_color': '#FCE4D6', 'border': 1})
+#             fmt_header_red = workbook.add_format({'bold': True, 'bg_color': '#F4CCCC', 'border': 1})
+#             fmt_header_green = workbook.add_format({'bold': True, 'bg_color': '#D9EAD3', 'border': 1})
+#             fmt_header_blue = workbook.add_format({'bold': True, 'bg_color': '#C9DAF8', 'border': 1})
+            
+#             fmt_currency = workbook.add_format({'num_format': '$#,##0'})
+#             fmt_bold = workbook.add_format({'bold': True})
+#             fmt_rank = workbook.add_format({'align': 'center'})
+
+#             # Define Layout order and headers
+#             layout = [
+#                 ("Top 10 Traders", fmt_header_orange),
+#                 ("Top 10 Distributors", fmt_header_red),
+#                 ("Top 10 Producers", fmt_header_green),
+#                 ("Teams Overall Ranking", fmt_header_blue)
+#             ]
+
+#             # Write tables side-by-side
+#             row_start = 1
+#             col_start = 1
+
+#             for title, header_fmt in layout:
+#                 if title not in self.leaderboards: continue
+                
+#                 df = self.leaderboards[title]
+#                 if df.empty: 
+#                     col_start += 4
+#                     continue
+
+#                 # 1. Title Row (Merged)
+#                 sheet.merge_range(row_start, col_start, row_start, col_start + 2, title, header_fmt)
+
+#                 # 2. Column Headers
+#                 sheet.write(row_start + 1, col_start, "Rank", fmt_bold)
+#                 sheet.write(row_start + 1, col_start + 1, "ID / Team", fmt_bold)
+#                 sheet.write(row_start + 1, col_start + 2, "NLV", fmt_bold)
+
+#                 # 3. Data Rows
+#                 for i, row in df.iterrows():
+#                     rank = row["Rank"]
+#                     name = row.iloc[1] # TraderID or Team Root
+#                     val = row["NLV"]
+                    
+#                     sheet.write(row_start + 2 + i, col_start, rank, fmt_rank)
+#                     sheet.write(row_start + 2 + i, col_start + 1, name)
+#                     sheet.write(row_start + 2 + i, col_start + 2, val, fmt_currency)
+
+#                 # Move cursor right for the next table (4 columns spacing now because rank added)
+#                 col_start += 4
+                
+#                 # Wrap to next row if too wide
+#                 if col_start > 16:
+#                     col_start = 1
+#                     row_start += len(df) + 5 # Add buffer for the longest list
+
+#             writer.close()
+#             print(f"Successfully saved rankings to: {save_path}")
+
+#         except Exception as e:
+#             print(f"Error saving file: {e}")
+
+# # ========================== Main Execution ==========================
+# if __name__ == "__main__":
+#     # 1. DEFINE YOUR FILE PATH HERE
+#     input_file = r"C:\Users\yiming.chang\Desktop\RITC_Results\Results_Heat1.xlsx"
+
+#     analyzer = SingleFileRankAnalyzer(input_file)
+    
+#     try:
+#         analyzer.load_data()
+#         analyzer.generate_leaderboards()
+#         analyzer.save_results("Rankings_Full_Output.xlsx")
+#     except Exception as ex:
+#         print(f"An error occurred: {ex}")
