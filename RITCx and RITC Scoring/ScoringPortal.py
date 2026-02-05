@@ -3,6 +3,9 @@
 """
 RITC Scoring — Teams-Only, SUM per subheat (SQL-accurate) + Audit
 Fixed H/S parser to correctly read files like H1SH2.csv, H1S3.csv, "Heat 2 Sub 5.csv", etc.
+
+cd "python scripts folder path"
+python ScoringPortal.py --root "Z:\lab\RITCWebsite\scoring\Previous_Competition_Results\Sample result data" --out "Final_Results.xlsx"
 """
 
 from __future__ import annotations
@@ -323,26 +326,56 @@ def view_CaseRanksStudent(heat: pd.DataFrame, team_codes: pd.Series) -> pd.DataF
         "TeamCode","CaseID","CaseName","Weight","Score","Rank"
     ]].sort_values(["CaseID","Rank","TeamCode"]).reset_index(drop=True)
 
+
 def view_TotalRanksStudent(case_ranks: pd.DataFrame) -> pd.DataFrame:
     cr = case_ranks.copy()
+    # Calculate weighted score per case
     cr["Weighted"] = cr["Score"] * (cr["Weight"] / 100.0)
+    
+    # Aggregate Score and Variance
     totals = (
         cr.groupby("TeamCode", as_index=False)
           .agg(Score=("Weighted","sum"),
-               Var=("Score", lambda s: float(pd.Series(s).var(ddof=1)) if len(s) >= 2 else np.nan))
+               # If < 2 cases, Variance is 0.0
+               Var=("Score", lambda s: float(pd.Series(s).var(ddof=1)) if len(s) >= 2 else 0.0))
     )
-    var_for_rank = totals["Var"].fillna(np.inf)
-    order = np.lexsort((var_for_rank.values, -totals["Score"].values))
-    key = list(zip(totals["Score"].round(12), var_for_rank.round(12)))
-    rank_map: Dict[Tuple[float,float], int] = {}
-    cur = 1
-    for idx in order:
-        k = key[idx]
-        if k not in rank_map:
-            rank_map[k] = cur
-        cur += 1
-    totals["Rank"] = [rank_map[k] for k in key]
-    return totals[["TeamCode","Score","Var","Rank"]].sort_values(["Rank","TeamCode"]).reset_index(drop=True)
+
+    # Prepare for sorting:
+    # 1. High Score is better (negate it for sorting)
+    # 2. Low Variance is better (keep positive)
+    # 3. TeamCode alphabetical (tie-breaker)
+    
+    # We use a temporary dataframe to sort easily
+    totals["NegScore"] = -totals["Score"]
+    
+    # Sort strictly
+    totals = totals.sort_values(by=["NegScore", "Var", "TeamCode"], ascending=[True, True, True])
+    
+    # Assign strictly unique ranks (1, 2, 3, 4...)
+    totals["Rank"] = range(1, len(totals) + 1)
+    
+    # Clean up and return
+    return totals[["TeamCode", "Score", "Var", "Rank"]].reset_index(drop=True)
+# def view_TotalRanksStudent(case_ranks: pd.DataFrame) -> pd.DataFrame:
+#     cr = case_ranks.copy()
+#     cr["Weighted"] = cr["Score"] * (cr["Weight"] / 100.0)
+#     totals = (
+#         cr.groupby("TeamCode", as_index=False)
+#           .agg(Score=("Weighted","sum"),
+#                Var=("Score", lambda s: float(pd.Series(s).var(ddof=1)) if len(s) >= 2 else 0.0))
+#     )
+#     var_for_rank = totals["Var"].fillna(np.inf)
+#     order = np.lexsort((var_for_rank.values, -totals["Score"].values))
+#     key = list(zip(totals["Score"].round(12), var_for_rank.round(12)))
+#     rank_map: Dict[Tuple[float,float], int] = {}
+#     cur = 1
+#     for idx in order:
+#         k = key[idx]
+#         if k not in rank_map:
+#             rank_map[k] = cur
+#         cur += 1
+#     totals["Rank"] = [rank_map[k] for k in key]
+#     return totals[["TeamCode","Score","Var","Rank"]].sort_values(["Rank","TeamCode"]).reset_index(drop=True)
 
 # -------- Extra: pivots + audit --------
 
